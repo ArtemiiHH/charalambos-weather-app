@@ -1,34 +1,61 @@
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+.root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Fullscreen canvas overlay */
+.fx {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* UI overlay */
 .ui {
-  position: fixed;
-  left: 14px;
-  bottom: 14px;
+  position: absolute;
+  top: 18px;
+  left: 18px;
   display: flex;
-  gap: 10px;
   align-items: center;
-  padding: 10px;
+  gap: 10px;
+  padding: 10px 12px;
   border-radius: 14px;
-  background: rgba(255,255,255,0.92);
-  border: 1px solid rgba(0,0,0,0.12);
-  box-shadow: 0 10px 40px rgba(0,0,0,0.20);
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  color: rgba(255,255,255,0.92);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
 .ui input {
-  width: 320px;
-  max-width: 70vw;
+  width: 240px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06);
+  color: white;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(0,0,0,0.18);
   outline: none;
-  font-size: 14px;
+}
+
+.ui input::placeholder {
+  color: rgba(255,255,255,0.6);
 }
 
 .temp {
-  min-width: 90px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(0,0,0,0.10);
-  background: rgba(255,255,255,0.65);
-  font-size: 14px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: right;
+  font-weight: 700;
+}
+
+.hint {
+  margin-left: 6px;
+  font-size: 12px;
+  opacity: 0.75;
 }
