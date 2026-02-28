@@ -1,61 +1,134 @@
-html, body, #root {
-  height: 100%;
-  margin: 0;
-}
-
-.root {
+/* Fullscreen root */
+.wr-root {
   position: relative;
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   overflow: hidden;
+  background: rgb(145, 55, 108);
 }
 
-/* Fullscreen canvas overlay */
-.fx {
+/* p5 mount container (canvas itself is positioned by p5 setup) */
+.wr-canvasMount {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  z-index: 0;
 }
 
-/* UI overlay */
-.ui {
+/* UI overlay wrapper */
+.wr-ui {
   position: absolute;
-  top: 18px;
-  left: 18px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(10px);
-  color: rgba(255,255,255,0.92);
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 20;
+  pointer-events: auto;
 }
 
-.ui input {
-  width: 240px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.06);
-  color: white;
+@media (min-width: 640px) {
+  .wr-ui {
+    right: auto;
+    width: 420px;
+  }
+}
+
+/* Card */
+.wr-card {
+  border-radius: 18px;
+  padding: 14px;
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Top row */
+.wr-topRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.wr-block {
+  min-width: 0;
+}
+
+.wr-right {
+  text-align: right;
+}
+
+.wr-label {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-bottom: 2px;
+}
+
+.wr-value {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.wr-temp {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Form */
+.wr-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.wr-input {
+  flex: 1;
+  border-radius: 14px;
   padding: 10px 12px;
-  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.95);
   outline: none;
 }
 
-.ui input::placeholder {
-  color: rgba(255,255,255,0.6);
+.wr-input::placeholder {
+  color: rgba(255, 255, 255, 0.65);
 }
 
-.temp {
-  min-width: 56px;
-  text-align: right;
-  font-weight: 700;
+.wr-input:focus {
+  border-color: rgba(255, 255, 255, 0.32);
 }
 
-.hint {
-  margin-left: 6px;
+.wr-button {
+  border-radius: 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+}
+
+.wr-button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.wr-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Footer text */
+.wr-error {
+  font-size: 13px;
+  color: rgba(255, 220, 220, 0.95);
+}
+
+.wr-tip {
   font-size: 12px;
-  opacity: 0.75;
+  opacity: 0.8;
 }
