@@ -87,7 +87,10 @@ export default function App() {
       const sketch = (p) => {
         // Simplified + faster organism (no offscreen graphics, fewer layers/steps)
         const CFG = {
-          bg: [145, 55, 108],
+          // Background lerps darker when colder
+          bgWarm: [145, 55, 108],
+          bgCold: [18, 10, 26],
+
           layers: 22,
           steps: 140,
           extent: 170,
@@ -119,12 +122,16 @@ export default function App() {
           tempSmoothed += (tempNow - tempSmoothed) * 0.04;
           const uT = temp01(tempSmoothed);
 
-          // Warmer -> faster & more energetic
-          const speed = 0.35 + uT * 1.0; // 0.35..1.35
+          // Warmer -> faster, colder -> slower (big range)
+          const speed = 0.12 + uT * 2.25; // 0.12..2.37
           const amp = 18 + uT * 52; // deformation amplitude
           const spin = 0.0008 + uT * 0.0025;
 
-          p.background(CFG.bg[0], CFG.bg[1], CFG.bg[2]);
+          // Background shifts darker when colder
+          const br = p.lerp(CFG.bgCold[0], CFG.bgWarm[0], uT);
+          const bg = p.lerp(CFG.bgCold[1], CFG.bgWarm[1], uT);
+          const bb = p.lerp(CFG.bgCold[2], CFG.bgWarm[2], uT);
+          p.background(br, bg, bb);
 
           const t = p.millis() * 0.001 * speed;
           const cx = p.width / 2;
@@ -243,8 +250,8 @@ export default function App() {
             <div className="wr-error">{error}</div>
           ) : (
             <div className="wr-tip">
-              Tip: Warmer places move faster. Try “Cairo”, “Reykjavik”,
-              “Sydney”.
+              Warmer places move faster, colder places move slower. Background
+              darkens in cold.
             </div>
           )}
         </div>
