@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
+// Temp threshold
 const TEMP_SOUND_THRESHOLD_C = 12;
 
+// Clamp a value between a minimum and maximum
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const temp01 = (c) => clamp((c + 20) / 60, 0, 1); // -20..40 -> 0..1
 
+// Convert temperature range (-20°C → 40°C)
+const temp01 = (c) => clamp((c + 20) / 60, 0, 1);
+
+// Play audio
 const safePlay = (audio) => {
   if (!audio) return;
   try {
@@ -14,23 +19,30 @@ const safePlay = (audio) => {
   } catch {}
 };
 
+// Fetch weather data from an API
 async function getLocationAndTemp(name) {
   const q = name.trim();
   if (!q) throw new Error("Please enter a location.");
 
+  // Geocode API
   const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
     q,
   )}&count=1&language=en&format=json`;
+
+  // Error if request failed
   const geoRes = await fetch(geoUrl);
   if (!geoRes.ok) throw new Error("Geocoding request failed.");
   const geo = await geoRes.json();
+
   const best = geo?.results?.[0];
   if (!best) throw new Error("Location not found. Try adding a country.");
 
+  // Create readable location label for UI
   const label = [best.name, best.admin1, best.country]
     .filter(Boolean)
     .join(", ");
 
+  // Fetch temp
   const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${best.latitude}&longitude=${best.longitude}&current_weather=true`;
   const wxRes = await fetch(wxUrl);
   if (!wxRes.ok) throw new Error("Weather request failed.");
@@ -47,15 +59,17 @@ export default function App() {
   const mountRef = useRef(null);
   const p5Ref = useRef(null);
 
+  // States
   const [query, setQuery] = useState("Nicosia");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [placeLabel, setPlaceLabel] = useState("Nicosia");
   const [tempC, setTempC] = useState(null);
 
+  // Temperature stored in ref
   const tempRef = useRef(20);
 
-  // audio bundle in one ref
+  // Store audio files
   const audioRef = useRef({
     cold: null,
     warm: null,
@@ -63,25 +77,34 @@ export default function App() {
     ambientStarted: false,
   });
 
+  // Memoize display
   const tempDisplay = useMemo(() => {
     if (tempC == null || Number.isNaN(tempC)) return "–";
     return `${tempC.toFixed(1)}°C`;
   }, [tempC]);
 
-  // init audio once
+  // Run audio
   useEffect(() => {
     const cold = new Audio("/sounds/click-cold.mp3");
     const warm = new Audio("/sounds/click-warm.mp3");
     const ambient = new Audio("/sounds/ambient-loop.mp3");
+
+    // Preload audio
     cold.preload = warm.preload = ambient.preload = "auto";
+
+    // Set volume
     cold.volume = warm.volume = 0.6;
+    // Loop background sound
     ambient.loop = true;
+    // Background volume
     ambient.volume = 0.3;
 
+    // Store audio references
     audioRef.current.cold = cold;
     audioRef.current.warm = warm;
     audioRef.current.ambient = ambient;
 
+    // Cleanup on unmount
     return () => {
       try {
         ambient.pause();
@@ -95,6 +118,7 @@ export default function App() {
     };
   }, []);
 
+  // Start background loop
   const startAmbientIfNeeded = () => {
     const a = audioRef.current;
     if (!a.ambient || a.ambientStarted) return;
@@ -102,15 +126,18 @@ export default function App() {
     safePlay(a.ambient);
   };
 
+  // Play click sound on temp
   const playClickSound = (temp) => {
     const a = audioRef.current;
     const cold = typeof temp === "number" && temp <= TEMP_SOUND_THRESHOLD_C;
     const snd = cold ? a.cold : a.warm;
     if (!snd) return;
+    // Restart sound
     snd.currentTime = 0;
     safePlay(snd);
   };
 
+  // Fetch weather
   const fetchWeather = async (name) => {
     setLoading(true);
     setError("");
@@ -126,12 +153,12 @@ export default function App() {
     }
   };
 
+  // Add default location on load
   useEffect(() => {
     fetchWeather("Nicosia");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // p5 setup
+  // P5 Animation
   useEffect(() => {
     let cancelled = false;
 
@@ -139,10 +166,12 @@ export default function App() {
       const { default: p5 } = await import("p5");
       if (cancelled) return;
 
+      // Remove previous instance
       p5Ref.current?.remove?.();
       p5Ref.current = null;
 
       const sketch = (p) => {
+        // Animation look
         const CFG = {
           bgWarm: [145, 55, 108],
           bgCold: [18, 10, 26],
@@ -151,6 +180,7 @@ export default function App() {
           extent: 170,
         };
 
+        // Interaction state
         const I = {
           hover: false,
           mx: 0,
@@ -168,6 +198,7 @@ export default function App() {
           p.pixelDensity(1);
           p.noStroke();
 
+          // Position canvas behind UI
           Object.assign(c.elt.style, {
             position: "absolute",
             inset: "0",
@@ -178,6 +209,7 @@ export default function App() {
           if (c.elt.parentElement)
             c.elt.parentElement.style.pointerEvents = "none";
 
+          // Interaction listeners
           c.elt.addEventListener("pointerenter", () => (I.hover = true));
           c.elt.addEventListener("pointerleave", () => (I.hover = false));
           c.elt.addEventListener("pointermove", (e) => {
@@ -199,19 +231,22 @@ export default function App() {
         p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
 
         p.draw = () => {
+          // Smooth temperature transitions
           const tempNow =
             typeof tempRef.current === "number" ? tempRef.current : 20;
           tempSmoothed += (tempNow - tempSmoothed) * 0.04;
           const uT = temp01(tempSmoothed);
 
-          // temp-driven motion + background
+          // Temperature drives motion
           const speed = 0.12 + uT * 2.25;
           const ampBase = 18 + uT * 52;
           const spin = 0.0008 + uT * 0.0025;
 
+          // Adjust background volume with temperature
           const a = audioRef.current.ambient;
           if (a) a.volume = 0.22 + uT * 0.25;
 
+          // Blend background colors
           p.background(
             p.lerp(CFG.bgCold[0], CFG.bgWarm[0], uT),
             p.lerp(CFG.bgCold[1], CFG.bgWarm[1], uT),
@@ -220,13 +255,13 @@ export default function App() {
 
           const t = now() * speed;
 
-          // hover pull
+          // Center point
           const cx0 = p.width / 2,
             cy0 = p.height / 2;
           const cx = I.hover ? cx0 + (I.mx - cx0) * 0.18 : cx0;
           const cy = I.hover ? cy0 + (I.my - cy0) * 0.18 : cy0;
 
-          // pulse
+          // Pulse animation
           const dt = now() - I.pulseT;
           const pulseStrength = dt >= 0 ? Math.exp(-dt * 2.2) : 0;
           const pulseRadius = dt >= 0 ? dt * (260 + 240 * uT) : 0;
@@ -238,6 +273,7 @@ export default function App() {
           p.rotate(p.frameCount * spin);
           p.blendMode(p.SCREEN);
 
+          // Draw animation shapes
           for (let L = 0; L < CFG.layers; L++) {
             const u = L / (CFG.layers - 1);
             const mid = 1 - Math.abs(u - 0.5) / 0.5;
@@ -315,6 +351,7 @@ export default function App() {
     };
   }, []);
 
+  // UI
   return (
     <div className="wr-root">
       <div ref={mountRef} className="wr-canvasMount" />
@@ -354,8 +391,7 @@ export default function App() {
             <div className="wr-error">{error}</div>
           ) : (
             <div className="wr-tip">
-              Hover to attract & energize. Click to pulse + sound. Ambient
-              starts on first click.
+              Hover to attract & energize. Click to pulse + sound.
             </div>
           )}
         </div>
