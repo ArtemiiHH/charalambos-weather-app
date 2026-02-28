@@ -76,7 +76,6 @@ export default function App() {
       if (cancelled) return;
       const p5 = mod.default;
 
-      // cleanup any prior instance
       if (p5Ref.current) {
         try {
           p5Ref.current.remove();
@@ -85,7 +84,6 @@ export default function App() {
       }
 
       const sketch = (p) => {
-        // Simplified + faster organism (no offscreen graphics, fewer layers/steps)
         const CFG = {
           // Background lerps darker when colder
           bgWarm: [145, 55, 108],
@@ -98,18 +96,50 @@ export default function App() {
 
         const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
         const temp01 = (temp) => clamp((temp + 20) / 60, 0, 1); // -20..40 => 0..1
+
         let tempSmoothed = 20;
+
+        // Interaction state
+        let hover = false;
+        let mx = 0;
+        let my = 0;
+
+        // Click pulse (shockwave)
+        let pulseX = 0;
+        let pulseY = 0;
+        let pulseT = -999; // time (seconds) since start when last pulse happened
+
+        const nowSeconds = () => p.millis() * 0.001;
 
         p.setup = () => {
           const c = p.createCanvas(p.windowWidth, p.windowHeight);
           p.pixelDensity(1);
           p.noStroke();
 
-          // Keep UI clickable (canvas should not eat pointer events)
+          // Canvas behind UI but still receives pointer events (we attach listeners)
           c.elt.style.position = "absolute";
           c.elt.style.inset = "0";
           c.elt.style.zIndex = "0";
-          c.elt.style.pointerEvents = "none";
+          c.elt.style.pointerEvents = "auto";
+
+          // Make sure the mounting div doesn't block events (canvas sits inside it)
+          if (c.elt.parentElement)
+            c.elt.parentElement.style.pointerEvents = "none";
+
+          // Events on canvas
+          c.elt.addEventListener("pointerenter", () => (hover = true));
+          c.elt.addEventListener("pointerleave", () => (hover = false));
+          c.elt.addEventListener("pointermove", (e) => {
+            const rect = c.elt.getBoundingClientRect();
+            mx = e.clientX - rect.left;
+            my = e.clientY - rect.top;
+          });
+          c.elt.addEventListener("pointerdown", (e) => {
+            const rect = c.elt.getBoundingClientRect();
+            pulseX = e.clientX - rect.left;
+            pulseY = e.clientY - rect.top;
+            pulseT = nowSeconds();
+          });
         };
 
         p.windowResized = () => {
@@ -122,10 +152,14 @@ export default function App() {
           tempSmoothed += (tempNow - tempSmoothed) * 0.04;
           const uT = temp01(tempSmoothed);
 
-          // Warmer -> faster, colder -> slower (big range)
-          const speed = 0.12 + uT * 2.25; // 0.12..2.37
-          const amp = 18 + uT * 52; // deformation amplitude
+          // Temperature -> motion
+          const speed = 0.12 + uT * 2.25; // warmer -> faster
+          const ampBase = 18 + uT * 52;
           const spin = 0.0008 + uT * 0.0025;
+
+          // Hover influence (slight extra energy)
+          const hoverBoost = hover ? 1.18 : 1.0;
+          const amp = ampBase * hoverBoost;
 
           // Background shifts darker when colder
           const br = p.lerp(CFG.bgCold[0], CFG.bgWarm[0], uT);
@@ -133,9 +167,28 @@ export default function App() {
           const bb = p.lerp(CFG.bgCold[2], CFG.bgWarm[2], uT);
           p.background(br, bg, bb);
 
-          const t = p.millis() * 0.001 * speed;
-          const cx = p.width / 2;
-          const cy = p.height / 2;
+          const t = nowSeconds() * speed;
+
+          // Center attracted toward mouse when hovering
+          const cx0 = p.width / 2;
+          const cy0 = p.height / 2;
+
+          let cx = cx0;
+          let cy = cy0;
+
+          if (hover) {
+            const pull = 0.18; // how much the shape follows the cursor
+            cx = cx0 + (mx - cx0) * pull;
+            cy = cy0 + (my - cy0) * pull;
+          }
+
+          // Click pulse timing
+          const dt = nowSeconds() - pulseT; // seconds since click
+          // pulseStrength decays over ~1.2s
+          const pulseStrength = dt >= 0 ? Math.exp(-dt * 2.2) : 0;
+
+          // Pulse wave radius expands with time
+          const pulseRadius = dt >= 0 ? dt * (260 + 240 * uT) : 0;
 
           p.push();
           p.translate(cx, cy);
@@ -160,11 +213,13 @@ export default function App() {
             for (let i = 0; i <= CFG.steps; i++) {
               const a = (i / CFG.steps) * p.TWO_PI;
 
+              // Organic lobes
               const lobe =
                 0.55 * Math.sin(a * 2 + ph * 1.1) +
                 0.35 * Math.sin(a * 3 - ph * 0.9) +
                 0.2 * Math.sin(a * 5 + ph * 0.6);
 
+              // Perlin radius variation
               const nx = 0.9 + 0.7 * Math.cos(a);
               const ny = 0.9 + 0.7 * Math.sin(a);
               const n = p.noise(
@@ -173,13 +228,39 @@ export default function App() {
                 t * 0.35 + L * 0.03,
               );
 
+              // Traveling wave along angle
               const wave = Math.sin(a * (5.0 + uT * 6.0) + ph * 2.1);
+
+              // Click pulse effect: a ring that expands from click point.
+              // Compute this vertex position in screen space (approx) to compare distance.
+              // We approximate by mapping the vertex direction into screen coordinates.
+              // It's cheap and feels good.
+              const approxR = base + lobe * 18;
+              const vx = cx + Math.cos(a) * approxR;
+              const vy = cy + Math.sin(a) * approxR;
+
+              const distToPulse = Math.hypot(vx - pulseX, vy - pulseY);
+              const ring = pulseStrength
+                ? Math.exp(-Math.pow((distToPulse - pulseRadius) / 70, 2)) *
+                  pulseStrength
+                : 0;
+
+              // Hover effect: add a subtle bulge on the side closer to mouse
+              let hoverBulge = 0;
+              if (hover) {
+                const toMouseX = mx - (cx + Math.cos(a) * approxR);
+                const toMouseY = my - (cy + Math.sin(a) * approxR);
+                const d = Math.hypot(toMouseX, toMouseY);
+                hoverBulge = Math.exp(-Math.pow(d / 220, 2)) * 14;
+              }
 
               const r =
                 base +
                 lobe * 18 +
                 (n - 0.5) * 2 * amp * (0.35 + 0.75 * mid) +
-                wave * (8 + 10 * mid);
+                wave * (8 + 10 * mid) +
+                ring * (70 + 50 * mid) + // click shockwave
+                hoverBulge * (0.6 + 0.7 * mid);
 
               const squash = 0.9 + 0.08 * Math.sin(t * 0.7 + u * 3.0);
               const x = Math.cos(a) * r;
@@ -250,8 +331,8 @@ export default function App() {
             <div className="wr-error">{error}</div>
           ) : (
             <div className="wr-tip">
-              Warmer places move faster, colder places move slower. Background
-              darkens in cold.
+              Hover to attract & energize. Click to send a pulse. Warmer =
+              faster, colder = darker.
             </div>
           )}
         </div>

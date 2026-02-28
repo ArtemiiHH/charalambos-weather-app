@@ -7,7 +7,7 @@
   background: rgb(18, 10, 26);
 }
 
-/* p5 mount container (canvas is positioned by p5 setup) */
+/* p5 mount container */
 .wr-canvasMount {
   position: absolute;
   inset: 0;
