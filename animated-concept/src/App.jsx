@@ -11,7 +11,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // Convert temperature range (-20°C → 40°C)
 const temp01 = (c) => clamp((c + 20) / 60, 0, 1);
 
-// Play audio
+// Play audio safely
 const safePlay = (audio) => {
   if (!audio) return;
   try {
@@ -20,7 +20,7 @@ const safePlay = (audio) => {
   } catch {}
 };
 
-// Fetch weather data from an API
+// Fetch weather data from Open-Meteo
 async function getLocationAndTemp(name) {
   const q = name.trim();
   if (!q) throw new Error("Please enter a location.");
@@ -46,8 +46,9 @@ async function getLocationAndTemp(name) {
   const wx = await wxRes.json();
 
   const t = wx?.current_weather?.temperature;
-  if (typeof t !== "number")
+  if (typeof t !== "number") {
     throw new Error("Weather data unavailable for this location.");
+  }
 
   return { label, temp: t };
 }
@@ -60,7 +61,7 @@ export default function App() {
   const rafRef = useRef(null);
   const lastVideoTimeRef = useRef(-1);
 
-  // States
+  // UI state
   const [query, setQuery] = useState("Nicosia");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -69,7 +70,7 @@ export default function App() {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
 
-  // Temperature stored in ref
+  // Temperature stored in ref for p5
   const tempRef = useRef(20);
 
   // Store audio files
@@ -84,26 +85,25 @@ export default function App() {
   const handStateRef = useRef({
     enabled: false,
     visible: false,
-    x: 0,
-    y: 0,
+    x: window.innerWidth * 0.5,
+    y: window.innerHeight * 0.5,
     pinch: false,
     pinchLatched: false,
+    spread: 0.5, // 0=tight, 1=expanded
   });
 
-  // Memoize display
   const tempDisplay = useMemo(() => {
     if (tempC == null || Number.isNaN(tempC)) return "–";
     return `${tempC.toFixed(1)}°C`;
   }, [tempC]);
 
-  // Run audio
+  // Load audio
   useEffect(() => {
     const cold = new Audio("/sounds/click-cold.mp3");
     const warm = new Audio("/sounds/click-warm.mp3");
     const ambient = new Audio("/sounds/earth-sound.mp3");
 
     cold.preload = warm.preload = ambient.preload = "auto";
-
     cold.volume = warm.volume = 0.6;
     ambient.loop = true;
     ambient.volume = 0.3;
@@ -160,12 +160,9 @@ export default function App() {
     fetchWeather("Nicosia");
   }, []);
 
-  // -----------------------------
-  // MediaPipe webcam hand tracker
-  // -----------------------------
+  // Setup MediaPipe hand tracking + webcam
   useEffect(() => {
     let mounted = true;
-    let stream = null;
 
     const setupHandTracking = async () => {
       try {
@@ -194,16 +191,19 @@ export default function App() {
 
         handLandmarkerRef.current = handLandmarker;
 
-        stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "user",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: 960 },
+            height: { ideal: 540 },
           },
           audio: false,
         });
 
-        if (!mounted) return;
+        if (!mounted) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
 
         const video = videoRef.current;
         if (!video) return;
@@ -217,45 +217,50 @@ export default function App() {
         const tick = () => {
           if (!mounted) return;
 
-          const video = videoRef.current;
+          const v = videoRef.current;
           const landmarker = handLandmarkerRef.current;
 
           if (
-            video &&
+            v &&
             landmarker &&
-            video.readyState >= 2 &&
-            video.currentTime !== lastVideoTimeRef.current
+            v.readyState >= 2 &&
+            v.currentTime !== lastVideoTimeRef.current
           ) {
-            lastVideoTimeRef.current = video.currentTime;
+            lastVideoTimeRef.current = v.currentTime;
 
-            const results = landmarker.detectForVideo(video, performance.now());
+            const results = landmarker.detectForVideo(v, performance.now());
             const lm = results?.landmarks?.[0];
 
             if (lm) {
-              // index fingertip = landmark 8
               const tip = lm[8];
-              // thumb tip = 4, index tip = 8 for simple pinch detection
               const thumbTip = lm[4];
               const indexTip = lm[8];
 
-              // normalized video coords -> viewport coords
-              // front camera usually feels better mirrored horizontally
+              // Mirror X so it feels natural for front camera
               const x = (1 - tip.x) * window.innerWidth;
               const y = tip.y * window.innerHeight;
 
-              // simple pinch distance in normalized image space
               const pinchDist = Math.hypot(
                 thumbTip.x - indexTip.x,
                 thumbTip.y - indexTip.y,
               );
-              const pinch = pinchDist < 0.05;
+
+              // Distance -> expansion mapping
+              const spreadMin = 0.03;
+              const spreadMax = 0.22;
+              const spreadRaw = clamp(
+                (pinchDist - spreadMin) / (spreadMax - spreadMin),
+                0,
+                1,
+              );
+
+              const pinch = pinchDist < 0.04;
 
               const hs = handStateRef.current;
               hs.visible = true;
-
-              // smoothing
               hs.x += (x - hs.x) * 0.28;
               hs.y += (y - hs.y) * 0.28;
+              hs.spread += (spreadRaw - hs.spread) * 0.22;
               hs.pinch = pinch;
             } else {
               handStateRef.current.visible = false;
@@ -289,25 +294,25 @@ export default function App() {
       handLandmarkerRef.current = null;
 
       const video = videoRef.current;
-      const s = video?.srcObject;
-      if (s && typeof s.getTracks === "function") {
-        s.getTracks().forEach((t) => t.stop());
+      const src = video?.srcObject;
+      if (src && typeof src.getTracks === "function") {
+        src.getTracks().forEach((t) => t.stop());
       }
-
       if (video) video.srcObject = null;
 
       handStateRef.current = {
         enabled: false,
         visible: false,
-        x: 0,
-        y: 0,
+        x: window.innerWidth * 0.5,
+        y: window.innerHeight * 0.5,
         pinch: false,
         pinchLatched: false,
+        spread: 0.5,
       };
     };
   }, []);
 
-  // P5 Animation
+  // P5 animation
   useEffect(() => {
     let cancelled = false;
 
@@ -360,16 +365,20 @@ export default function App() {
             pointerEvents: "auto",
           });
 
-          if (c.elt.parentElement)
-            c.elt.parentElement.style.pointerEvents = "none";
+          c.elt.addEventListener("pointerenter", () => {
+            I.hover = true;
+          });
 
-          c.elt.addEventListener("pointerenter", () => (I.hover = true));
-          c.elt.addEventListener("pointerleave", () => (I.hover = false));
+          c.elt.addEventListener("pointerleave", () => {
+            I.hover = false;
+          });
+
           c.elt.addEventListener("pointermove", (e) => {
             const r = c.elt.getBoundingClientRect();
             I.mx = e.clientX - r.left;
             I.my = e.clientY - r.top;
           });
+
           c.elt.addEventListener("pointerdown", (e) => {
             const r = c.elt.getBoundingClientRect();
             const x = e.clientX - r.left;
@@ -378,20 +387,34 @@ export default function App() {
           });
         };
 
-        p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
+        p.windowResized = () => {
+          p.resizeCanvas(p.windowWidth, p.windowHeight);
+        };
 
         p.draw = () => {
+          // Smooth temperature
           const tempNow =
             typeof tempRef.current === "number" ? tempRef.current : 20;
           tempSmoothed += (tempNow - tempSmoothed) * 0.04;
           const uT = temp01(tempSmoothed);
 
+          const hs = handStateRef.current;
+          const handSpread = hs.enabled && hs.visible ? hs.spread : 0.5;
+          const densityT = 1 - handSpread;
+
+          // Motion + form derived from temp and hand spread
           const speed = 0.12 + uT * 2.25;
-          const ampBase = 18 + uT * 52;
+          const ampBase = (18 + uT * 52) * (0.7 + handSpread * 0.9);
           const spin = 0.0008 + uT * 0.0025;
 
-          const a = audioRef.current.ambient;
-          if (a) a.volume = 0.22 + uT * 0.25;
+          const extentScale = 0.72 + handSpread * 0.7;
+          const noiseScale = 0.45 + handSpread * 1.15;
+          const lobeScale = 0.7 + handSpread * 0.7;
+          const hoverBulgeScale = 0.8 + handSpread * 0.8;
+          const alphaBoost = 1.2 + densityT * 0.8;
+
+          const ambient = audioRef.current.ambient;
+          if (ambient) ambient.volume = 0.22 + uT * 0.25;
 
           p.background(
             p.lerp(CFG.bgCold[0], CFG.bgWarm[0], uT),
@@ -401,19 +424,17 @@ export default function App() {
 
           const t = now() * speed;
 
-          // mouse fallback
+          // Mouse fallback
           let inputHover = I.hover;
           let inputX = I.mx;
           let inputY = I.my;
 
-          // hand override when visible
-          const hs = handStateRef.current;
+          // Hand overrides mouse when visible
           if (hs.enabled && hs.visible) {
             inputHover = true;
             inputX = hs.x;
             inputY = hs.y;
 
-            // pinch -> pulse once per pinch
             if (hs.pinch && !hs.pinchLatched) {
               hs.pinchLatched = true;
               triggerPulse(inputX, inputY);
@@ -443,14 +464,18 @@ export default function App() {
             const mid = 1 - Math.abs(u - 0.5) / 0.5;
 
             const cool = 0.15 + 0.2 * Math.sin(t * 0.8 + u * p.TWO_PI);
+
             p.fill(
               p.lerp(255, 185, cool),
               p.lerp(150, 220, cool),
               p.lerp(190, 255, cool),
-              6 + 18 * Math.pow(mid, 1.2),
+              (6 + 18 * Math.pow(mid, 1.2)) * alphaBoost,
             );
 
-            const base = CFG.extent * (0.55 + 0.55 * mid) + (u - 0.5) * 55;
+            const base =
+              CFG.extent * extentScale * (0.55 + 0.55 * mid) +
+              (u - 0.5) * 55 * (0.8 + handSpread * 0.5);
+
             const ph = t * (0.9 + 0.9 * (1 - u)) + L * 0.37;
 
             p.beginShape();
@@ -470,7 +495,7 @@ export default function App() {
 
               const wave = Math.sin(ang * (5.0 + uT * 6.0) + ph * 2.1);
 
-              const approxR = base + lobe * 18;
+              const approxR = base + lobe * 18 * lobeScale;
               const vx = cx + Math.cos(ang) * approxR;
               const vy = cy + Math.sin(ang) * approxR;
 
@@ -483,18 +508,23 @@ export default function App() {
               let hoverBulge = 0;
               if (inputHover) {
                 const d = Math.hypot(inputX - vx, inputY - vy);
-                hoverBulge = Math.exp(-Math.pow(d / 220, 2)) * 14;
+                hoverBulge =
+                  Math.exp(-Math.pow(d / (180 + handSpread * 90), 2)) *
+                  14 *
+                  hoverBulgeScale;
               }
 
               const r =
                 base +
-                lobe * 18 +
-                (n - 0.5) * 2 * amp * (0.35 + 0.75 * mid) +
-                wave * (8 + 10 * mid) +
-                ring * (70 + 50 * mid) +
+                lobe * 18 * lobeScale +
+                (n - 0.5) * 2 * amp * noiseScale * (0.35 + 0.75 * mid) +
+                wave * (8 + 10 * mid) * (0.75 + handSpread * 0.7) +
+                ring * (70 + 50 * mid) * (0.85 + handSpread * 0.5) +
                 hoverBulge * (0.6 + 0.7 * mid);
 
-              const squash = 0.9 + 0.08 * Math.sin(t * 0.7 + u * 3.0);
+              const squash =
+                0.92 + (0.05 + handSpread * 0.06) * Math.sin(t * 0.7 + u * 3.0);
+
               p.vertex(Math.cos(ang) * r, Math.sin(ang) * r * squash);
             }
             p.endShape(p.CLOSE);
@@ -503,7 +533,7 @@ export default function App() {
           p.pop();
           p.blendMode(p.BLEND);
 
-          // Optional debug cursor for hand
+          // Optional hand cursor debug dot
           if (hs.enabled && hs.visible) {
             p.push();
             p.noStroke();
@@ -524,7 +554,6 @@ export default function App() {
     };
   }, []);
 
-  // UI
   return (
     <div className="wr-root">
       <video
@@ -544,6 +573,7 @@ export default function App() {
               <div className="wr-label">Location</div>
               <div className="wr-value">{placeLabel}</div>
             </div>
+
             <div className="wr-block wr-right">
               <div className="wr-label">Temperature</div>
               <div className="wr-temp">{tempDisplay}</div>
@@ -575,7 +605,7 @@ export default function App() {
           ) : (
             <div className="wr-tip">
               {cameraReady
-                ? "Move your hand to attract the organism. Pinch to pulse."
+                ? "Move your hand to attract the organism. Bring fingers together to tighten it. Open them to expand. Pinch to pulse."
                 : "Loading camera + hand tracking..."}
             </div>
           )}
