@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 
 // Temp threshold
 const TEMP_SOUND_THRESHOLD_C = 12;
@@ -24,12 +25,10 @@ async function getLocationAndTemp(name) {
   const q = name.trim();
   if (!q) throw new Error("Please enter a location.");
 
-  // Geocode API
   const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
     q,
   )}&count=1&language=en&format=json`;
 
-  // Error if request failed
   const geoRes = await fetch(geoUrl);
   if (!geoRes.ok) throw new Error("Geocoding request failed.");
   const geo = await geoRes.json();
@@ -37,12 +36,10 @@ async function getLocationAndTemp(name) {
   const best = geo?.results?.[0];
   if (!best) throw new Error("Location not found. Try adding a country.");
 
-  // Create readable location label for UI
   const label = [best.name, best.admin1, best.country]
     .filter(Boolean)
     .join(", ");
 
-  // Fetch temp
   const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${best.latitude}&longitude=${best.longitude}&current_weather=true`;
   const wxRes = await fetch(wxUrl);
   if (!wxRes.ok) throw new Error("Weather request failed.");
@@ -58,6 +55,10 @@ async function getLocationAndTemp(name) {
 export default function App() {
   const mountRef = useRef(null);
   const p5Ref = useRef(null);
+  const videoRef = useRef(null);
+  const handLandmarkerRef = useRef(null);
+  const rafRef = useRef(null);
+  const lastVideoTimeRef = useRef(-1);
 
   // States
   const [query, setQuery] = useState("Nicosia");
@@ -65,6 +66,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [placeLabel, setPlaceLabel] = useState("Nicosia");
   const [tempC, setTempC] = useState(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState("");
 
   // Temperature stored in ref
   const tempRef = useRef(20);
@@ -75,6 +78,16 @@ export default function App() {
     warm: null,
     ambient: null,
     ambientStarted: false,
+  });
+
+  // Shared hand state for p5
+  const handStateRef = useRef({
+    enabled: false,
+    visible: false,
+    x: 0,
+    y: 0,
+    pinch: false,
+    pinchLatched: false,
   });
 
   // Memoize display
@@ -89,22 +102,16 @@ export default function App() {
     const warm = new Audio("/sounds/click-warm.mp3");
     const ambient = new Audio("/sounds/earth-sound.mp3");
 
-    // Preload audio
     cold.preload = warm.preload = ambient.preload = "auto";
 
-    // Set volume
     cold.volume = warm.volume = 0.6;
-    // Loop background sound
     ambient.loop = true;
-    // Background volume
     ambient.volume = 0.3;
 
-    // Store audio references
     audioRef.current.cold = cold;
     audioRef.current.warm = warm;
     audioRef.current.ambient = ambient;
 
-    // Cleanup on unmount
     return () => {
       try {
         ambient.pause();
@@ -118,7 +125,6 @@ export default function App() {
     };
   }, []);
 
-  // Start background loop
   const startAmbientIfNeeded = () => {
     const a = audioRef.current;
     if (!a.ambient || a.ambientStarted) return;
@@ -126,18 +132,15 @@ export default function App() {
     safePlay(a.ambient);
   };
 
-  // Play click sound on temp
   const playClickSound = (temp) => {
     const a = audioRef.current;
     const cold = typeof temp === "number" && temp <= TEMP_SOUND_THRESHOLD_C;
     const snd = cold ? a.cold : a.warm;
     if (!snd) return;
-    // Restart sound
     snd.currentTime = 0;
     safePlay(snd);
   };
 
-  // Fetch weather
   const fetchWeather = async (name) => {
     setLoading(true);
     setError("");
@@ -153,9 +156,155 @@ export default function App() {
     }
   };
 
-  // Add default location on load
   useEffect(() => {
     fetchWeather("Nicosia");
+  }, []);
+
+  // -----------------------------
+  // MediaPipe webcam hand tracker
+  // -----------------------------
+  useEffect(() => {
+    let mounted = true;
+    let stream = null;
+
+    const setupHandTracking = async () => {
+      try {
+        setCameraError("");
+
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm",
+        );
+
+        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+
+        if (!mounted) {
+          handLandmarker.close?.();
+          return;
+        }
+
+        handLandmarkerRef.current = handLandmarker;
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+
+        if (!mounted) return;
+
+        const video = videoRef.current;
+        if (!video) return;
+
+        video.srcObject = stream;
+        await video.play();
+
+        handStateRef.current.enabled = true;
+        setCameraReady(true);
+
+        const tick = () => {
+          if (!mounted) return;
+
+          const video = videoRef.current;
+          const landmarker = handLandmarkerRef.current;
+
+          if (
+            video &&
+            landmarker &&
+            video.readyState >= 2 &&
+            video.currentTime !== lastVideoTimeRef.current
+          ) {
+            lastVideoTimeRef.current = video.currentTime;
+
+            const results = landmarker.detectForVideo(video, performance.now());
+            const lm = results?.landmarks?.[0];
+
+            if (lm) {
+              // index fingertip = landmark 8
+              const tip = lm[8];
+              // thumb tip = 4, index tip = 8 for simple pinch detection
+              const thumbTip = lm[4];
+              const indexTip = lm[8];
+
+              // normalized video coords -> viewport coords
+              // front camera usually feels better mirrored horizontally
+              const x = (1 - tip.x) * window.innerWidth;
+              const y = tip.y * window.innerHeight;
+
+              // simple pinch distance in normalized image space
+              const pinchDist = Math.hypot(
+                thumbTip.x - indexTip.x,
+                thumbTip.y - indexTip.y,
+              );
+              const pinch = pinchDist < 0.05;
+
+              const hs = handStateRef.current;
+              hs.visible = true;
+
+              // smoothing
+              hs.x += (x - hs.x) * 0.28;
+              hs.y += (y - hs.y) * 0.28;
+              hs.pinch = pinch;
+            } else {
+              handStateRef.current.visible = false;
+              handStateRef.current.pinch = false;
+            }
+          }
+
+          rafRef.current = requestAnimationFrame(tick);
+        };
+
+        tick();
+      } catch (err) {
+        console.error(err);
+        setCameraError(
+          "Could not access camera or load hand tracking. Check camera permissions.",
+        );
+      }
+    };
+
+    setupHandTracking();
+
+    return () => {
+      mounted = false;
+
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+      try {
+        handLandmarkerRef.current?.close?.();
+      } catch {}
+
+      handLandmarkerRef.current = null;
+
+      const video = videoRef.current;
+      const s = video?.srcObject;
+      if (s && typeof s.getTracks === "function") {
+        s.getTracks().forEach((t) => t.stop());
+      }
+
+      if (video) video.srcObject = null;
+
+      handStateRef.current = {
+        enabled: false,
+        visible: false,
+        x: 0,
+        y: 0,
+        pinch: false,
+        pinchLatched: false,
+      };
+    };
   }, []);
 
   // P5 Animation
@@ -166,12 +315,10 @@ export default function App() {
       const { default: p5 } = await import("p5");
       if (cancelled) return;
 
-      // Remove previous instance
       p5Ref.current?.remove?.();
       p5Ref.current = null;
 
       const sketch = (p) => {
-        // Animation look
         const CFG = {
           bgWarm: [145, 55, 108],
           bgCold: [18, 10, 26],
@@ -180,7 +327,6 @@ export default function App() {
           extent: 170,
         };
 
-        // Interaction state
         const I = {
           hover: false,
           mx: 0,
@@ -193,12 +339,20 @@ export default function App() {
         let tempSmoothed = 20;
         const now = () => p.millis() * 0.001;
 
+        const triggerPulse = (x, y) => {
+          I.pulseX = x;
+          I.pulseY = y;
+          I.pulseT = now();
+
+          startAmbientIfNeeded();
+          playClickSound(tempRef.current);
+        };
+
         p.setup = () => {
           const c = p.createCanvas(p.windowWidth, p.windowHeight);
           p.pixelDensity(1);
           p.noStroke();
 
-          // Position canvas behind UI
           Object.assign(c.elt.style, {
             position: "absolute",
             inset: "0",
@@ -209,7 +363,6 @@ export default function App() {
           if (c.elt.parentElement)
             c.elt.parentElement.style.pointerEvents = "none";
 
-          // Interaction listeners
           c.elt.addEventListener("pointerenter", () => (I.hover = true));
           c.elt.addEventListener("pointerleave", () => (I.hover = false));
           c.elt.addEventListener("pointermove", (e) => {
@@ -219,34 +372,27 @@ export default function App() {
           });
           c.elt.addEventListener("pointerdown", (e) => {
             const r = c.elt.getBoundingClientRect();
-            I.pulseX = e.clientX - r.left;
-            I.pulseY = e.clientY - r.top;
-            I.pulseT = now();
-
-            startAmbientIfNeeded();
-            playClickSound(tempRef.current);
+            const x = e.clientX - r.left;
+            const y = e.clientY - r.top;
+            triggerPulse(x, y);
           });
         };
 
         p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
 
         p.draw = () => {
-          // Smooth temperature transitions
           const tempNow =
             typeof tempRef.current === "number" ? tempRef.current : 20;
           tempSmoothed += (tempNow - tempSmoothed) * 0.04;
           const uT = temp01(tempSmoothed);
 
-          // Temperature drives motion
           const speed = 0.12 + uT * 2.25;
           const ampBase = 18 + uT * 52;
           const spin = 0.0008 + uT * 0.0025;
 
-          // Adjust background volume with temperature
           const a = audioRef.current.ambient;
           if (a) a.volume = 0.22 + uT * 0.25;
 
-          // Blend background colors
           p.background(
             p.lerp(CFG.bgCold[0], CFG.bgWarm[0], uT),
             p.lerp(CFG.bgCold[1], CFG.bgWarm[1], uT),
@@ -255,25 +401,43 @@ export default function App() {
 
           const t = now() * speed;
 
-          // Center point
-          const cx0 = p.width / 2,
-            cy0 = p.height / 2;
-          const cx = I.hover ? cx0 + (I.mx - cx0) * 0.18 : cx0;
-          const cy = I.hover ? cy0 + (I.my - cy0) * 0.18 : cy0;
+          // mouse fallback
+          let inputHover = I.hover;
+          let inputX = I.mx;
+          let inputY = I.my;
 
-          // Pulse animation
+          // hand override when visible
+          const hs = handStateRef.current;
+          if (hs.enabled && hs.visible) {
+            inputHover = true;
+            inputX = hs.x;
+            inputY = hs.y;
+
+            // pinch -> pulse once per pinch
+            if (hs.pinch && !hs.pinchLatched) {
+              hs.pinchLatched = true;
+              triggerPulse(inputX, inputY);
+            } else if (!hs.pinch) {
+              hs.pinchLatched = false;
+            }
+          }
+
+          const cx0 = p.width / 2;
+          const cy0 = p.height / 2;
+          const cx = inputHover ? cx0 + (inputX - cx0) * 0.18 : cx0;
+          const cy = inputHover ? cy0 + (inputY - cy0) * 0.18 : cy0;
+
           const dt = now() - I.pulseT;
           const pulseStrength = dt >= 0 ? Math.exp(-dt * 2.2) : 0;
           const pulseRadius = dt >= 0 ? dt * (260 + 240 * uT) : 0;
 
-          const amp = ampBase * (I.hover ? 1.18 : 1);
+          const amp = ampBase * (inputHover ? 1.18 : 1);
 
           p.push();
           p.translate(cx, cy);
           p.rotate(p.frameCount * spin);
           p.blendMode(p.SCREEN);
 
-          // Draw animation shapes
           for (let L = 0; L < CFG.layers; L++) {
             const u = L / (CFG.layers - 1);
             const mid = 1 - Math.abs(u - 0.5) / 0.5;
@@ -317,8 +481,8 @@ export default function App() {
                 : 0;
 
               let hoverBulge = 0;
-              if (I.hover) {
-                const d = Math.hypot(I.mx - vx, I.my - vy);
+              if (inputHover) {
+                const d = Math.hypot(inputX - vx, inputY - vy);
                 hoverBulge = Math.exp(-Math.pow(d / 220, 2)) * 14;
               }
 
@@ -338,6 +502,15 @@ export default function App() {
 
           p.pop();
           p.blendMode(p.BLEND);
+
+          // Optional debug cursor for hand
+          if (hs.enabled && hs.visible) {
+            p.push();
+            p.noStroke();
+            p.fill(255, 255, 255, 180);
+            p.circle(inputX, inputY, 14);
+            p.pop();
+          }
         };
       };
 
@@ -354,6 +527,14 @@ export default function App() {
   // UI
   return (
     <div className="wr-root">
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        autoPlay
+        style={{ display: "none" }}
+      />
+
       <div ref={mountRef} className="wr-canvasMount" />
 
       <div className="wr-ui">
@@ -389,9 +570,13 @@ export default function App() {
 
           {error ? (
             <div className="wr-error">{error}</div>
+          ) : cameraError ? (
+            <div className="wr-error">{cameraError}</div>
           ) : (
             <div className="wr-tip">
-              Hover to attract & energize. Click to pulse + sound.
+              {cameraReady
+                ? "Move your hand to attract the organism. Pinch to pulse."
+                : "Loading camera + hand tracking..."}
             </div>
           )}
         </div>
