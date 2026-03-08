@@ -163,6 +163,11 @@ export default function App() {
   // Setup MediaPipe hand tracking + webcam
   useEffect(() => {
     let mounted = true;
+    let videoFrameHandle = null;
+    let lastDetectTs = 0;
+
+    const TARGET_DETECT_FPS = 18; // 15–24 is a good range
+    const DETECT_INTERVAL_MS = 1000 / TARGET_DETECT_FPS;
 
     const setupHandTracking = async () => {
       try {
@@ -194,8 +199,9 @@ export default function App() {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "user",
-            width: { ideal: 960 },
-            height: { ideal: 540 },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 30, max: 30 },
           },
           audio: false,
         });
@@ -214,21 +220,24 @@ export default function App() {
         handStateRef.current.enabled = true;
         setCameraReady(true);
 
-        const tick = () => {
+        const processVideoFrame = (nowMs) => {
           if (!mounted) return;
 
           const v = videoRef.current;
           const landmarker = handLandmarkerRef.current;
 
-          if (
-            v &&
-            landmarker &&
-            v.readyState >= 2 &&
-            v.currentTime !== lastVideoTimeRef.current
-          ) {
-            lastVideoTimeRef.current = v.currentTime;
+          if (!v || !landmarker || v.readyState < 2) {
+            if (mounted && v?.requestVideoFrameCallback) {
+              videoFrameHandle = v.requestVideoFrameCallback(processVideoFrame);
+            }
+            return;
+          }
 
-            const results = landmarker.detectForVideo(v, performance.now());
+          // Throttle inference
+          if (nowMs - lastDetectTs >= DETECT_INTERVAL_MS) {
+            lastDetectTs = nowMs;
+
+            const results = landmarker.detectForVideo(v, nowMs);
             const lm = results?.landmarks?.[0];
 
             if (lm) {
@@ -236,7 +245,6 @@ export default function App() {
               const thumbTip = lm[4];
               const indexTip = lm[8];
 
-              // Mirror X so it feels natural for front camera
               const x = (1 - tip.x) * window.innerWidth;
               const y = tip.y * window.innerHeight;
 
@@ -245,7 +253,6 @@ export default function App() {
                 thumbTip.y - indexTip.y,
               );
 
-              // Distance -> expansion mapping
               const spreadMin = 0.03;
               const spreadMax = 0.22;
               const spreadRaw = clamp(
@@ -258,9 +265,9 @@ export default function App() {
 
               const hs = handStateRef.current;
               hs.visible = true;
-              hs.x += (x - hs.x) * 0.28;
-              hs.y += (y - hs.y) * 0.28;
-              hs.spread += (spreadRaw - hs.spread) * 0.22;
+              hs.x += (x - hs.x) * 0.35;
+              hs.y += (y - hs.y) * 0.35;
+              hs.spread += (spreadRaw - hs.spread) * 0.25;
               hs.pinch = pinch;
             } else {
               handStateRef.current.visible = false;
@@ -268,10 +275,22 @@ export default function App() {
             }
           }
 
-          rafRef.current = requestAnimationFrame(tick);
+          if (mounted && v.requestVideoFrameCallback) {
+            videoFrameHandle = v.requestVideoFrameCallback(processVideoFrame);
+          }
         };
 
-        tick();
+        if (video.requestVideoFrameCallback) {
+          videoFrameHandle = video.requestVideoFrameCallback(processVideoFrame);
+        } else {
+          // Fallback for older browsers
+          const fallbackLoop = () => {
+            if (!mounted) return;
+            processVideoFrame(performance.now());
+            rafRef.current = requestAnimationFrame(fallbackLoop);
+          };
+          fallbackLoop();
+        }
       } catch (err) {
         console.error(err);
         setCameraError(
@@ -287,28 +306,24 @@ export default function App() {
 
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
+      const video = videoRef.current;
+      if (videoFrameHandle != null && video?.cancelVideoFrameCallback) {
+        try {
+          video.cancelVideoFrameCallback(videoFrameHandle);
+        } catch {}
+      }
+
       try {
         handLandmarkerRef.current?.close?.();
       } catch {}
 
       handLandmarkerRef.current = null;
 
-      const video = videoRef.current;
       const src = video?.srcObject;
       if (src && typeof src.getTracks === "function") {
         src.getTracks().forEach((t) => t.stop());
       }
       if (video) video.srcObject = null;
-
-      handStateRef.current = {
-        enabled: false,
-        visible: false,
-        x: window.innerWidth * 0.5,
-        y: window.innerHeight * 0.5,
-        pinch: false,
-        pinchLatched: false,
-        spread: 0.5,
-      };
     };
   }, []);
 
@@ -327,8 +342,8 @@ export default function App() {
         const CFG = {
           bgWarm: [145, 55, 108],
           bgCold: [18, 10, 26],
-          layers: 22,
-          steps: 140,
+          layers: 16,
+          steps: 96,
           extent: 170,
         };
 
