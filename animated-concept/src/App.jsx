@@ -99,14 +99,14 @@ export default function App() {
 
   // Load audio
   useEffect(() => {
-    const cold = new Audio("/sounds/click-warm.mp3");
-    const warm = new Audio("/sounds/click-warm.mp3");
+    const cold = new Audio("/sounds/pulse.mp3");
+    const warm = new Audio("/sounds/pulse.mp3");
     const ambient = new Audio("/sounds/earth-movement.mp3");
 
     cold.preload = warm.preload = ambient.preload = "auto";
     cold.volume = warm.volume = 0.3;
     ambient.loop = true;
-    ambient.volume = 2;
+    ambient.volume = 1.0;
 
     audioRef.current.cold = cold;
     audioRef.current.warm = warm;
